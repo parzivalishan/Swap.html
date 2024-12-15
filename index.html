@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Trader Joe Swap: XSEED ↔ AVAX</title>
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.5.2/dist/web3.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #0f5bcc;
+        }
+        .swap-container {
+            background-color: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        }
+        .token-input {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            background-color: #f9f9f9;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        .token-input input {
+            width: 60%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        .token-input select {
+            width: 35%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        #connectWallet, #swapButton {
+            width: 100%;
+            padding: 12px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-top: 10px;
+            font-size: 16px;
+            transition: background-color 0.3s ease;
+        }
+        #connectWallet:hover, #swapButton:hover {
+            background-color: #0056b3;
+        }
+        #walletAddress, #swapStatus {
+            text-align: center;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+        #swapStatus {
+            padding: 10px;
+            border-radius: 6px;
+        }
+        .price-info {
+            text-align: center;
+            margin-bottom: 15px;
+            font-size: 14px;
+            color: #666;
+        }
+        /* New styles for better UI */
+        .swap-container h2 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        .token-input input:disabled {
+            background-color: #e9ecef;
+        }
+    </style>
+</head>
+<body>
+    <div class="swap-container">
+        <h2>Swap Tokens</h2>
+        <div id="walletAddress">Not Connected</div>
+        <div id="swapStatus"></div>
+        <div class="price-info" id="priceInfo">Current Price: Loading...</div>
+
+        <button id="connectWallet">Connect Wallet</button>
+
+        <div class="token-input">
+            <input type="number" id="fromAmount" placeholder="From Amount" step="0.0001">
+            <select id="fromToken">
+                <option value="AVAX">AVAX</option>
+                <option value="XSEED">XSEED</option>
+            </select>
+        </div>
+
+        <div class="token-input">
+            <input type="number" id="toAmount" placeholder="To Amount" disabled>
+            <select id="toToken">
+                <option value="XSEED">XSEED</option>
+                <option value="AVAX">AVAX</option>
+            </select>
+        </div>
+
+        <button id="swapButton">Swap</button>
+    </div>
+
+    <script>
+        // Trader Joe Router V2 Address on Avalanche Mainnet
+        const TRADER_JOE_ROUTER = '0x60aE616a2155Ee3d9A68541Ba4544862310933d4';
+        
+        // XSEED Token Contract on Avalanche
+        const XSEED_CONTRACT = '0x0A10D108E2d81ccC793E37b56206C84bF96ddc57';
+        
+        // WAVAX Contract on Avalanche
+        const WAVAX_CONTRACT = '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7';
+
+        // Token ABIs
+        const ERC20_ABI = [
+            {
+                "constant": false,
+                "inputs": [
+                    {"name": "_spender", "type": "address"},
+                    {"name": "_value", "type": "uint256"}
+                ],
+                "name": "approve",
+                "outputs": [{"name": "", "type": "bool"}],
+                "type": "function"
+            },
+            {
+                "constant": true,
+                "inputs": [
+                    {"name": "_owner", "type": "address"},
+                    {"name": "_spender", "type": "address"}
+                ],
+                "name": "allowance",
+                "outputs": [{"name": "", "type": "uint256"}],
+                "type": "function"
+            },
+            {
+                "constant": true,
+                "inputs": [],
+                "name": "decimals",
+                "outputs": [{"name": "", "type": "uint8"}],
+                "type": "function"
+            }
+        ];
+
+        // Trader Joe Router ABI (simplified)
+        const ROUTER_ABI = [
+    {
+        "inputs": [
+            {"name": "amountIn", "type": "uint256"},
+            {"name": "amountOutMin", "type": "uint256"},
+            {"name": "path", "type": "address[]"},
+            {"name": "to", "type": "address"},
+            {"name": "deadline", "type": "uint256"}
+        ],
+        "name": "swapExactTokensForETH",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "amountIn", "type": "uint256"},
+            {"name": "amountOutMin", "type": "uint256"},
+            {"name": "path", "type": "address[]"},
+            {"name": "to", "type": "address"},
+            {"name": "deadline", "type": "uint256"}
+        ],
+        "name": "swapExactETHForTokens",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "amountIn", "type": "uint256"},
+            {"name": "path", "type": "address[]"}
+        ],
+        "name": "getAmountsOut",
+        "outputs": [{"type": "uint256[]"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+];
+        let web3, accounts, xseedContract, routerContract;
+        let xseedDecimals = 18;
+
+        // DOM Elements
+        const connectWalletBtn = document.getElementById('connectWallet');
+        const walletAddressDisplay = document.getElementById('walletAddress');
+        const swapStatusDisplay = document.getElementById('swapStatus');
+        const priceInfoDisplay = document.getElementById('priceInfo');
+        const fromTokenSelect = document.getElementById('fromToken');
+        const toTokenSelect = document.getElementById('toToken');
+        const fromAmountInput = document.getElementById('fromAmount');
+        const toAmountInput = document.getElementById('toAmount');
+        const swapButton = document.getElementById('swapButton');
+
+        // Prevent selecting same token in both dropdowns
+        fromTokenSelect.addEventListener('change', () => {
+            const selectedFromToken = fromTokenSelect.value;
+            toTokenSelect.value = selectedFromToken === 'AVAX' ? 'XSEED' : 'AVAX';
+            updatePrice();
+        });
+
+        toTokenSelect.addEventListener('change', () => {
+            const selectedToToken = toTokenSelect.value;
+            fromTokenSelect.value = selectedToToken === 'AVAX' ? 'XSEED' : 'AVAX';
+            updatePrice();
+        });
+
+        // Price update on amount change
+        fromAmountInput.addEventListener('input', updatePrice);
+
+        async function connectWallet() {
+            if (window.ethereum) {
+                try {
+                    web3 = new Web3(window.ethereum);
+                    accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                    
+                    // Check Avalanche Network
+                    const chainId = await web3.eth.getChainId();
+                    if (chainId !== 43114) {
+                        throw new Error('Wrong network. Please connect to Avalanche Mainnet.');
+                    }
+
+                    // Initialize contracts
+                    xseedContract = new web3.eth.Contract(ERC20_ABI, XSEED_CONTRACT);
+                    routerContract = new web3.eth.Contract(ROUTER_ABI, TRADER_JOE_ROUTER);
+
+                    // Get XSEED decimals
+                    xseedDecimals = await xseedContract.methods.decimals().call();
+
+                    walletAddressDisplay.textContent = `Connected: ${accounts[0]}`;
+                    connectWalletBtn.style.display = 'none';
+                    updateStatus('Wallet Connected Successfully', 'success');
+                    updatePrice();
+                } catch (error) {
+                    console.error('Wallet connection failed', error);
+                    updateStatus(error.message, 'error');
+                }
+            } else {
+                updateStatus('MetaMask not detected', 'error');
+            }
+        }
+
+        async function updatePrice() {
+            if (!accounts) return;
+
+            const fromToken = fromTokenSelect.value;
+            const toToken = toTokenSelect.value;
+            const fromAmount = fromAmountInput.value;
+
+            if (!fromAmount || fromAmount <= 0) {
+                priceInfoDisplay.textContent = 'Enter an amount to see price';
+                return;
+            }
+
+            try {
+                // Convert amount to wei
+                const amountInWei = web3.utils.toWei(fromAmount, 'ether');
+
+                // Determine swap path
+                const path = fromToken === 'AVAX' 
+                    ? [WAVAX_CONTRACT, XSEED_CONTRACT] 
+                    : [XSEED_CONTRACT, WAVAX_CONTRACT];
+
+                // Get estimated output
+                const amounts = await routerContract.methods.getAmountsOut(amountInWei, path).call();
+                const outputAmountWei = amounts[1];
+                
+                // Convert back to ether and round
+                const outputAmount = web3.utils.fromWei(outputAmountWei, 'ether');
+                toAmountInput.value = parseFloat(outputAmount).toFixed(6);
+
+                // Update price info
+                priceInfoDisplay.textContent = `1 ${fromToken} ≈ ${(outputAmount / fromAmount).toFixed(6)} ${toToken}`;
+
+            } catch (error) {
+                console.error('Price update failed', error);
+                priceInfoDisplay.textContent = 'Price update failed';
+            }
+        }
+
+        connectWalletBtn.addEventListener('click', connectWallet);
+
+        swapButton.addEventListener('click', async () => {
+            if (!accounts) {
+                updateStatus('Please connect wallet first', 'error');
+                return;
+            }
+
+            const fromToken = fromTokenSelect.value;
+            const toToken = toTokenSelect.value;
+            const fromAmount = fromAmountInput.value;
+            const toAmount = toAmountInput.value;
+
+            if (!fromAmount || fromAmount <= 0) {
+                updateStatus('Please enter a valid swap amount', 'error');
+                return;
+            }
+
+            try {
+                // Convert amount to wei
+                const amountInWei = web3.utils.toWei(fromAmount, 'ether');
+                const amountOutMinWei = web3.utils.toWei((toAmount * 0.95).toString(), 'ether'); // 5% slippage
+                const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes
+
+                if (fromToken === 'AVAX' && toToken === 'XSEED') {
+                    await swapAVAXToXSEED(amountInWei, amountOutMinWei, deadline);
+                } else if (fromToken === 'XSEED' && toToken === 'AVAX') {
+                    await swapXSEEDToAVAX(amountInWei, amountOutMinWei, deadline);
+                } else {
+                    updateStatus('Invalid swap route', 'error');
+                }
+            } catch (error) {
+                console.error('Swap failed', error);
+                updateStatus(`Swap failed: ${error.message}`, 'error');
+            }
+        });
+
+        async function swapAVAXToXSEED(amountInWei, amountOutMinWei, deadline) {
+    try {
+        // Execute the swap from AVAX to XSEED
+        await routerContract.methods.swapExactETHForTokens(
+            amountOutMinWei,
+            [WAVAX_CONTRACT, XSEED_CONTRACT],
+            accounts[0],
+            deadline
+        ).send({ 
+            from: accounts[0], 
+            value: amountInWei 
+        });
+
+        updateStatus('AVAX to XSEED swap successful', 'success');
+    } catch (error) {
+        console.error('Error swapping AVAX to XSEED:', error);
+        updateStatus('Failed to swap AVAX to XSEED', 'error');
+    }
+}
+
+async function swapXSEEDToAVAX(amountInWei, amountOutMinWei, deadline) {
+    try {
+        // Approve token spending for the router contract
+        await xseedContract.methods.approve(
+            TRADER_JOE_ROUTER, 
+            amountInWei
+        ).send({ from: accounts[0] });
+
+        // Execute the swap from XSEED to AVAX
+        await routerContract.methods.swapExactTokensForETH(
+            amountInWei,
+            amountOutMinWei,
+            [XSEED_CONTRACT, WAVAX_CONTRACT],
+            accounts[0],
+            deadline
+        ).send({ from: accounts[0] });
+
+        updateStatus('XSEED to AVAX swap successful', 'success');
+    } catch (error) {
+        console.error('Error swapping XSEED to AVAX:', error);
+        updateStatus('Failed to swap XSEED to AVAX', 'error');
+    }
+}
+
+function updateStatus(message, type = 'info') {
+    swapStatusDisplay.textContent = message;
+    swapStatusDisplay.style.backgroundColor = 
+        type === 'error' ? '#ffdddd' : 
+        type === 'success' ? '#ddffdd' : '#ddddff';
+    swapStatusDisplay.style.color = 
+        type === 'error' ? 'red' : 
+        type === 'success' ? 'green' : 'blue';
+}
+
+    </script>
+</body>
+</html>
